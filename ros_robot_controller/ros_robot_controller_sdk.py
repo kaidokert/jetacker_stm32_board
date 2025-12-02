@@ -9,6 +9,9 @@ import struct
 import serial
 import threading
 import argparse
+import termios
+import tty
+import os
 
 class PacketControllerState(enum.IntEnum):
     # The format of communication protocol
@@ -512,51 +515,309 @@ class Board:
         self.port.close()
         print("END...")
 
-def bus_servo_test(board):
-    board.bus_servo_set_position(1, [[1, 500], [2, 500]])
-    time.sleep(1)
-    board.bus_servo_set_position(2, [[1, 0], [2, 0]])
-    time.sleep(1)
-    board.bus_servo_stop([1, 2])
-    time.sleep(1)
+class KeyboardReader:
+    """Thread-safe keyboard reader for non-blocking input."""
     
-    servo_id = 1
-    board.bus_servo_set_id(254, servo_id)
-    servo_id = board.bus_servo_read_id()
-    if servo_id is not None:
-        servo_id = servo_id[0]
+    def __init__(self):
+        self.key_queue = queue.Queue()
+        self.running = False
+        self.thread = None
+        self.old_settings = None
         
-        offset_set = -10
-        board.bus_servo_set_offset(servo_id, offset_set)
-        board.bus_servo_save_offset(servo_id)
+    def start(self):
+        """Start the keyboard reading thread."""
+        self.running = True
+        self.thread = threading.Thread(target=self._read_keys, daemon=True)
+        self.thread.start()
         
-        vin_l, vin_h = 4500, 14500
-        board.bus_servo_set_vin_limit(servo_id, [vin_l, vin_h])
+    def stop(self):
+        """Stop the keyboard reading thread."""
+        self.running = False
+        if self.thread:
+            self.thread.join(timeout=0.5)
+    
+    def _read_keys(self):
+        """Background thread that reads keyboard input."""
+        fd = sys.stdin.fileno()
+        self.old_settings = termios.tcgetattr(fd)
+        try:
+            tty.setraw(fd)
+            while self.running:
+                # Use os.read with non-blocking mode
+                try:
+                    ch = os.read(fd, 1).decode('utf-8', errors='ignore')
+                    if ch:
+                        # Handle escape sequences (arrow keys, etc.)
+                        if ch == '\x1b':
+                            # Try to read next chars for arrow keys
+                            try:
+                                ch2 = os.read(fd, 1).decode('utf-8', errors='ignore')
+                                if ch2 == '[':
+                                    ch3 = os.read(fd, 1).decode('utf-8', errors='ignore')
+                                    self.key_queue.put('\x1b[' + ch3)
+                                else:
+                                    self.key_queue.put(ch)
+                            except:
+                                self.key_queue.put(ch)
+                        else:
+                            self.key_queue.put(ch)
+                except:
+                    time.sleep(0.001)
+        finally:
+            if self.old_settings:
+                termios.tcsetattr(fd, termios.TCSADRAIN, self.old_settings)
+    
+    def get_key(self):
+        """Get a key from the queue if available."""
+        try:
+            return self.key_queue.get_nowait()
+        except queue.Empty:
+            return None
 
-        temp_limit = 85
-        board.bus_servo_set_temp_limit(servo_id, temp_limit)
-
-        angle_l, angle_h = 0, 1000
-        board.bus_servo_set_angle_limit(servo_id, [angle_l, angle_h])
-        
-        board.bus_servo_enable_torque(servo_id, 1)
-
-        print('id:', board.bus_servo_read_id(servo_id))
-        print('offset:', board.bus_servo_read_offset(servo_id), offset_set)
-        print('vin:', board.bus_servo_read_vin(servo_id))
-        print('temp:', board.bus_servo_read_temp(servo_id))
-        print('position:', board.bus_servo_read_position(servo_id))
-        print('angle_limit:', board.bus_servo_read_angle_limit(servo_id), [angle_l, angle_h])
-        print('vin_limit:', board.bus_servo_read_vin_limit(servo_id), [vin_l, vin_h])
-        print('temp_limit:', board.bus_servo_read_temp_limit(servo_id), temp_limit)
-        print('torque_state:', board.bus_servo_read_torque_state(servo_id))
+def bus_servo_test(board):
+    """Interactive bus servo control with keyboard."""
+    print("=" * 60)
+    print("INTERACTIVE BUS SERVO CONTROL")
+    print("=" * 60)
+    print("Controls:")
+    print("  1-8     - Select servo ID")
+    print("  ↑/W     - Increase position (+50)")
+    print("  ↓/S     - Decrease position (-50)")
+    print("  →/D     - Fine increase (+10)")
+    print("  ←/A     - Fine decrease (-10)")
+    print("  +/=     - Increase duration")
+    print("  -/_     - Decrease duration")
+    print("  SPACE   - Move to center (500)")
+    print("  T       - Toggle torque on/off")
+    print("  I       - Read servo info")
+    print("  ESC     - Exit (or Ctrl+C)")
+    print("=" * 60)
+    print()
+    
+    selected_servo = 1
+    target_position = 500
+    duration = 1.0  # seconds
+    torque_enabled = True
+    
+    def print_status():
+        print(f"\rServo: {selected_servo} | Position: {target_position:4d} | Duration: {duration:.2f}s | Torque: {'ON' if torque_enabled else 'OFF'} ", end='', flush=True)
+    
+    def move_servo():
+        board.bus_servo_set_position(duration, [[selected_servo, target_position]])
+    
+    def read_servo_info():
+        print("\n" + "=" * 60)
+        print(f"Reading info for servo {selected_servo}...")
+        try:
+            pos = board.bus_servo_read_position(selected_servo)
+            print(f"  Current position: {pos}")
+            vin = board.bus_servo_read_vin(selected_servo)
+            print(f"  Voltage: {vin}")
+            temp = board.bus_servo_read_temp(selected_servo)
+            print(f"  Temperature: {temp}")
+            torque = board.bus_servo_read_torque_state(selected_servo)
+            print(f"  Torque state: {torque}")
+            angle_limit = board.bus_servo_read_angle_limit(selected_servo)
+            print(f"  Angle limits: {angle_limit}")
+        except Exception as e:
+            print(f"  Error reading servo: {e}")
+        print("=" * 60)
+    
+    # Initial position
+    move_servo()
+    print_status()
+    
+    # Start keyboard reader
+    kb = KeyboardReader()
+    kb.start()
+    
+    try:
+        while True:
+            key = kb.get_key()
+            
+            if key:
+                # Servo selection
+                if key in '12345678':
+                    selected_servo = int(key)
+                    print_status()
+                
+                # Position control
+                elif key in ['w', 'W', '\x1b[A']:  # Up - large step
+                    target_position = min(1000, target_position + 50)
+                    move_servo()
+                    print_status()
+                elif key in ['s', 'S', '\x1b[B']:  # Down - large step
+                    target_position = max(0, target_position - 50)
+                    move_servo()
+                    print_status()
+                elif key in ['d', 'D', '\x1b[C']:  # Right - fine step
+                    target_position = min(1000, target_position + 10)
+                    move_servo()
+                    print_status()
+                elif key in ['a', 'A', '\x1b[D']:  # Left - fine step
+                    target_position = max(0, target_position - 10)
+                    move_servo()
+                    print_status()
+                elif key == ' ':  # Center
+                    target_position = 500
+                    move_servo()
+                    print_status()
+                
+                # Duration control
+                elif key in ['+', '=']:
+                    duration = min(5.0, duration + 0.1)
+                    print_status()
+                elif key in ['-', '_']:
+                    duration = max(0.1, duration - 0.1)
+                    print_status()
+                
+                # Torque toggle
+                elif key in ['t', 'T']:
+                    torque_enabled = not torque_enabled
+                    board.bus_servo_enable_torque(selected_servo, torque_enabled)
+                    print_status()
+                
+                # Read info
+                elif key in ['i', 'I']:
+                    read_servo_info()
+                    print_status()
+                
+                # Exit
+                elif key in ['\x1b', '\x03']:  # ESC or Ctrl+C
+                    break
+            
+            time.sleep(0.01)
+    
+    except KeyboardInterrupt:
+        pass
+    finally:
+        kb.stop()
+        print("\n\nBus servo test complete!")
 
 def pwm_servo_test(board):
-    servo_id = 1
-    board.pwm_servo_set_position(0.5, [[servo_id, 1500]])
-    board.pwm_servo_set_offset(servo_id, 0)
-    print('offset:', board.pwm_servo_read_offset(servo_id))
-    print('position:', board.pwm_servo_read_position(servo_id))
+    """Interactive PWM servo control with keyboard."""
+    print("=" * 60)
+    print("INTERACTIVE PWM SERVO CONTROL")
+    print("=" * 60)
+    print("Controls:")
+    print("  1-4     - Select servo ID (1-4)")
+    print("  ↑/W     - Increase position (+100μs)")
+    print("  ↓/S     - Decrease position (-100μs)")
+    print("  →/D     - Fine increase (+25μs)")
+    print("  ←/A     - Fine decrease (-25μs)")
+    print("  +/=     - Increase duration")
+    print("  -/_     - Decrease duration")
+    print("  SPACE   - Move to center (1500μs)")
+    print("  0       - Set offset to 0")
+    print("  [/]     - Adjust offset")
+    print("  I       - Read servo info")
+    print("  ESC     - Exit (or Ctrl+C)")
+    print("=" * 60)
+    print("Note: PWM position range is typically 500-2500μs")
+    print("=" * 60)
+    print()
+    
+    selected_servo = 1
+    target_position = 1500  # microseconds
+    duration = 0.5  # seconds
+    current_offset = 0
+    
+    def print_status():
+        print(f"\rServo: {selected_servo} | Position: {target_position:4d}μs | Duration: {duration:.2f}s | Offset: {current_offset:3d} ", end='', flush=True)
+    
+    def move_servo():
+        board.pwm_servo_set_position(duration, [[selected_servo, target_position]])
+    
+    def read_servo_info():
+        print("\n" + "=" * 60)
+        print(f"Reading info for PWM servo {selected_servo}...")
+        try:
+            offset = board.pwm_servo_read_offset(selected_servo)
+            print(f"  Offset: {offset}")
+            position = board.pwm_servo_read_position(selected_servo)
+            print(f"  Position: {position}")
+        except Exception as e:
+            print(f"  Error reading servo: {e}")
+        print("=" * 60)
+    
+    # Initial position
+    move_servo()
+    print_status()
+    
+    # Start keyboard reader
+    kb = KeyboardReader()
+    kb.start()
+    
+    try:
+        while True:
+            key = kb.get_key()
+            
+            if key:
+                # Servo selection
+                if key in '1234':
+                    selected_servo = int(key)
+                    print_status()
+                
+                # Position control
+                elif key in ['w', 'W', '\x1b[A']:  # Up - large step
+                    target_position = min(2500, target_position + 100)
+                    move_servo()
+                    print_status()
+                elif key in ['s', 'S', '\x1b[B']:  # Down - large step
+                    target_position = max(500, target_position - 100)
+                    move_servo()
+                    print_status()
+                elif key in ['d', 'D', '\x1b[C']:  # Right - fine step
+                    target_position = min(2500, target_position + 25)
+                    move_servo()
+                    print_status()
+                elif key in ['a', 'A', '\x1b[D']:  # Left - fine step
+                    target_position = max(500, target_position - 25)
+                    move_servo()
+                    print_status()
+                elif key == ' ':  # Center
+                    target_position = 1500
+                    move_servo()
+                    print_status()
+                
+                # Duration control
+                elif key in ['+', '=']:
+                    duration = min(5.0, duration + 0.1)
+                    print_status()
+                elif key in ['-', '_']:
+                    duration = max(0.1, duration - 0.1)
+                    print_status()
+                
+                # Offset control
+                elif key == '[':
+                    current_offset = max(-127, current_offset - 5)
+                    board.pwm_servo_set_offset(selected_servo, current_offset)
+                    print_status()
+                elif key == ']':
+                    current_offset = min(127, current_offset + 5)
+                    board.pwm_servo_set_offset(selected_servo, current_offset)
+                    print_status()
+                elif key == '0':
+                    current_offset = 0
+                    board.pwm_servo_set_offset(selected_servo, current_offset)
+                    print_status()
+                
+                # Read info
+                elif key in ['i', 'I']:
+                    read_servo_info()
+                    print_status()
+                
+                # Exit
+                elif key in ['\x1b', '\x03']:  # ESC or Ctrl+C
+                    break
+            
+            time.sleep(0.01)
+    
+    except KeyboardInterrupt:
+        pass
+    finally:
+        kb.stop()
+        print("\n\nPWM servo test complete!")
 
 def test_imu(board, interval=0.01):
     """Test IMU sensor and continuously print readings."""
@@ -639,13 +900,121 @@ def test_buzzer(board, freq=1900, on_time=0.3, off_time=0.01, repeat=1):
     board.set_buzzer(freq, on_time, off_time, repeat)
     print("Buzzer command sent!")
 
-def test_motor(board, duration=1.0, speed=0.6):
-    """Test motor control."""
-    print(f"Testing motors at speed {speed} for {duration}s...")
-    board.set_motor_speed([[1, speed], [2, speed], [3, -speed], [4, -speed]])
-    time.sleep(duration)
-    board.set_motor_speed([[1, 0], [2, 0], [3, 0], [4, 0]])
-    print("Motors stopped!")
+def test_motor(board, duration=None, speed=0.6):
+    """Interactive motor control with keyboard - Ackerman drive (car-like steering)."""
+    print("=" * 60)
+    print("INTERACTIVE MOTOR CONTROL (Ackerman Drive)")
+    print("=" * 60)
+    print("Controls:")
+    print("  W/↑     - Increase forward speed")
+    print("  S/↓     - Increase backward speed")
+    print("  A/←     - Steer left")
+    print("  D/→     - Steer right")
+    print("  SPACE   - Stop / Reset to center")
+    print("  +/=     - Increase max speed limit")
+    print("  -/_     - Decrease max speed limit")
+    print("  ESC     - Exit (or Ctrl+C)")
+    print("=" * 60)
+    print()
+    
+    max_speed = speed
+    throttle = 0.0  # Current forward/backward speed (-1.0 to 1.0)
+    steering = 0.0  # Current steering (-1.0 left to 1.0 right)
+    
+    throttle_step = 0.05
+    steering_step = 0.1
+    
+    def update_motors():
+        # Ackerman drive: combine throttle and steering
+        # Assuming motors 1,2 = left side, motors 3,4 = right side
+        # For simple car: reduce speed on inside of turn
+        # Note: negating throttle because motors are wired in reverse
+        left_speed = -throttle - (steering * abs(throttle))
+        right_speed = -throttle + (steering * abs(throttle))
+        
+        # Clamp speeds
+        left_speed = max(-max_speed, min(max_speed, left_speed))
+        right_speed = max(-max_speed, min(max_speed, right_speed))
+        
+        board.set_motor_speed([
+            [1, left_speed],
+            [2, left_speed],
+            [3, right_speed],
+            [4, right_speed]
+        ])
+    
+    def print_status():
+        direction = "FWD" if throttle > 0 else "REV" if throttle < 0 else "STOP"
+        steer_dir = "LEFT" if steering < 0 else "RIGHT" if steering > 0 else "CENTER"
+        print(f"\r{direction} Speed: {abs(throttle):.2f} | Steering: {steer_dir:6s} {abs(steering):.2f} | Max: {max_speed:.2f}   ", end='', flush=True)
+    
+    print_status()
+    
+    # Start keyboard reader
+    kb = KeyboardReader()
+    kb.start()
+    
+    try:
+        start_time = time.time()
+        while True:
+            # Check duration limit if specified
+            if duration is not None and (time.time() - start_time) >= duration:
+                break
+            
+            key = kb.get_key()
+            
+            if key:
+                # Throttle controls
+                if key in ['w', 'W', '\x1b[A']:  # Increase forward
+                    throttle = min(max_speed, throttle + throttle_step)
+                    update_motors()
+                    print_status()
+                elif key in ['s', 'S', '\x1b[B']:  # Increase backward
+                    throttle = max(-max_speed, throttle - throttle_step)
+                    update_motors()
+                    print_status()
+                
+                # Steering controls
+                elif key in ['a', 'A', '\x1b[D']:  # Steer left
+                    steering = max(-1.0, steering - steering_step)
+                    update_motors()
+                    print_status()
+                elif key in ['d', 'D', '\x1b[C']:  # Steer right
+                    steering = min(1.0, steering + steering_step)
+                    update_motors()
+                    print_status()
+                
+                # Stop
+                elif key == ' ':  # Stop and center
+                    throttle = 0.0
+                    steering = 0.0
+                    update_motors()
+                    print_status()
+                
+                # Speed limit adjustment
+                elif key in ['+', '=']:  # Increase max speed
+                    max_speed = min(1.0, max_speed + 0.05)
+                    print_status()
+                elif key in ['-', '_']:  # Decrease max speed
+                    max_speed = max(0.1, max_speed - 0.05)
+                    # Also clamp current throttle
+                    throttle = max(-max_speed, min(max_speed, throttle))
+                    update_motors()
+                    print_status()
+                
+                # Exit
+                elif key in ['\x1b', '\x03']:  # ESC or Ctrl+C
+                    break
+            
+            time.sleep(0.01)
+    
+    except KeyboardInterrupt:
+        pass
+    finally:
+        kb.stop()
+        # Stop all motors
+        board.set_motor_speed([[1, 0], [2, 0], [3, 0], [4, 0]])
+        print("\n\nMotors stopped!")
 
 def test_oled(board, line, text):
     """Test OLED display."""
@@ -729,9 +1098,9 @@ Examples:
     # Motor parameters
     motor_group = parser.add_argument_group('motor parameters')
     motor_group.add_argument('--motor-speed', type=float, default=0.6,
-                            help='Motor speed (default: 0.6)')
-    motor_group.add_argument('--motor-duration', type=float, default=1.0,
-                            help='Motor test duration in seconds (default: 1.0)')
+                            help='Initial motor speed (default: 0.6)')
+    motor_group.add_argument('--motor-duration', type=float, default=None,
+                            help='Motor test duration in seconds (default: None = interactive mode, runs until ESC/Ctrl+C)')
     
     # OLED parameters
     oled_group = parser.add_argument_group('OLED parameters')
