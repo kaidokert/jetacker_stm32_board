@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 # encoding: utf-8
 # stm32 python sdk
+import sys
 import enum
 import time
 import queue
 import struct
 import serial
 import threading
+import argparse
 
 class PacketControllerState(enum.IntEnum):
     # The format of communication protocol
@@ -556,43 +558,254 @@ def pwm_servo_test(board):
     print('offset:', board.pwm_servo_read_offset(servo_id))
     print('position:', board.pwm_servo_read_position(servo_id))
 
-if __name__ == "__main__":
-    board = Board()
-    board.enable_reception()
-    time.sleep(0.1)
-    print("START...")
-    board.set_led(0.1, 0.9, 1)
-    board.set_buzzer(1900, 0.3, 0.01, 1)
-    # board.set_motor_speed([[1, 0.6], [2, 0.6], [3, -0.6], [4, -0.6]])
-    # time.sleep(1)
-    # board.set_motor_speed([[1, 0], [2, 0], [3, 0], [4, 0]])
-    # bus_servo_test(board)
-    # pwm_servo_test(board)
-    # last_time = time.time()
+def test_imu(board, interval=0.01):
+    """Test IMU sensor and continuously print readings."""
+    print("Testing IMU... (Press Ctrl+C to stop)")
+    print("Format: ax, ay, az, gx, gy, gz")
     while True:
         try:
-            # board.set_buzzer(3000, 0.05, 0.01, 1)
             res = board.get_imu()
             if res is not None:
+                print("IMU: ", end='')
                 for item in res:
-                    print("  {: .8f} ".format(item), end='')
+                    print("{: .8f} ".format(item), end='')
                 print()
-            # res = board.get_button()
-            # if res is not None:
-                # print(res)
-            # data = board.get_gamepad()
-            # if data is not None:
-                # print(data[0])
-                # print(data[1])
-            # res = board.get_sbus()
-            # if res is not None:
-                # print(res)
-            # res = board.get_battery()
-            # if res is not None:
-                # print(res)
-            time.sleep(0.01)
-            # t = time.time()
-            # print(1/(t - last_time))
-            # last_time = t
+            time.sleep(interval)
         except KeyboardInterrupt:
             break
+
+def test_button(board, interval=0.01):
+    """Test button inputs."""
+    print("Testing buttons... (Press Ctrl+C to stop)")
+    print("Format: (button_id, state) - state: 0=click, 1=pressed")
+    while True:
+        try:
+            res = board.get_button()
+            if res is not None:
+                print(f"Button: ID={res[0]}, State={res[1]}")
+            time.sleep(interval)
+        except KeyboardInterrupt:
+            break
+
+def test_battery(board, interval=1.0):
+    """Test battery voltage reading."""
+    print("Testing battery... (Press Ctrl+C to stop)")
+    print("Format: voltage in mV")
+    while True:
+        try:
+            res = board.get_battery()
+            if res is not None:
+                print(f"Battery: {res} mV ({res/1000:.2f} V)")
+            time.sleep(interval)
+        except KeyboardInterrupt:
+            break
+
+def test_gamepad(board, interval=0.01):
+    """Test gamepad inputs."""
+    print("Testing gamepad... (Press Ctrl+C to stop)")
+    print("Format: (axes, buttons)")
+    while True:
+        try:
+            data = board.get_gamepad()
+            if data is not None:
+                print(f"Axes: {[f'{x:.2f}' for x in data[0]]}")
+                print(f"Buttons: {data[1]}")
+                print("---")
+            time.sleep(interval)
+        except KeyboardInterrupt:
+            break
+
+def test_sbus(board, interval=0.01):
+    """Test SBUS receiver."""
+    print("Testing SBUS... (Press Ctrl+C to stop)")
+    while True:
+        try:
+            res = board.get_sbus()
+            if res is not None:
+                print(f"SBUS: {[f'{x:.2f}' for x in res]}")
+            time.sleep(interval)
+        except KeyboardInterrupt:
+            break
+
+def test_led(board, on_time=0.1, off_time=0.9, repeat=1, led_id=1):
+    """Test LED control."""
+    print(f"Testing LED {led_id}: on={on_time}s, off={off_time}s, repeat={repeat}")
+    board.set_led(on_time, off_time, repeat, led_id)
+    print("LED command sent!")
+
+def test_buzzer(board, freq=1900, on_time=0.3, off_time=0.01, repeat=1):
+    """Test buzzer control."""
+    print(f"Testing buzzer: freq={freq}Hz, on={on_time}s, off={off_time}s, repeat={repeat}")
+    board.set_buzzer(freq, on_time, off_time, repeat)
+    print("Buzzer command sent!")
+
+def test_motor(board, duration=1.0, speed=0.6):
+    """Test motor control."""
+    print(f"Testing motors at speed {speed} for {duration}s...")
+    board.set_motor_speed([[1, speed], [2, speed], [3, -speed], [4, -speed]])
+    time.sleep(duration)
+    board.set_motor_speed([[1, 0], [2, 0], [3, 0], [4, 0]])
+    print("Motors stopped!")
+
+def test_oled(board, line, text):
+    """Test OLED display."""
+    print(f"Setting OLED line {line} to: {text}")
+    board.set_oled_text(line, text)
+    print("OLED command sent!")
+
+def main():
+    parser = argparse.ArgumentParser(
+        description='ROS Robot Controller SDK - Test and control STM32 board',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  %(prog)s --port /dev/ttyUSB0 --imu              # Test IMU sensor
+  %(prog)s --port /dev/rrc --battery              # Test battery reading
+  %(prog)s --port /dev/rrc --gamepad --interval 0.05  # Test gamepad at 50ms interval
+  %(prog)s --port /dev/rrc --led --led-on 0.5 --led-off 0.5  # Blink LED
+  %(prog)s --port /dev/rrc --motor --motor-speed 0.3 --motor-duration 2  # Test motors
+        """
+    )
+    
+    # Connection parameters
+    parser.add_argument('--port', '-p', type=str, default='/dev/rrc',
+                        help='Serial port device (default: /dev/rrc)')
+    parser.add_argument('--baudrate', '-b', type=int, default=1000000,
+                        help='Serial baudrate (default: 1000000)')
+    parser.add_argument('--timeout', '-t', type=float, default=5,
+                        help='Serial timeout in seconds (default: 5)')
+    
+    # Test modes
+    test_group = parser.add_argument_group('test modes')
+    test_group.add_argument('--imu', action='store_true',
+                            help='Test IMU sensor (accelerometer and gyroscope)')
+    test_group.add_argument('--button', action='store_true',
+                            help='Test button inputs')
+    test_group.add_argument('--battery', action='store_true',
+                            help='Test battery voltage reading')
+    test_group.add_argument('--gamepad', action='store_true',
+                            help='Test gamepad controller')
+    test_group.add_argument('--sbus', action='store_true',
+                            help='Test SBUS receiver')
+    test_group.add_argument('--led', action='store_true',
+                            help='Test LED control')
+    test_group.add_argument('--buzzer', action='store_true',
+                            help='Test buzzer')
+    test_group.add_argument('--motor', action='store_true',
+                            help='Test motor control')
+    test_group.add_argument('--bus-servo', action='store_true',
+                            help='Test bus servo control')
+    test_group.add_argument('--pwm-servo', action='store_true',
+                            help='Test PWM servo control')
+    test_group.add_argument('--oled', action='store_true',
+                            help='Test OLED display')
+    
+    # General parameters
+    parser.add_argument('--interval', type=float, default=0.01,
+                        help='Polling interval for sensor tests in seconds (default: 0.01)')
+    
+    # LED parameters
+    led_group = parser.add_argument_group('LED parameters')
+    led_group.add_argument('--led-id', type=int, default=1,
+                          help='LED ID (default: 1)')
+    led_group.add_argument('--led-on', type=float, default=0.1,
+                          help='LED on time in seconds (default: 0.1)')
+    led_group.add_argument('--led-off', type=float, default=0.9,
+                          help='LED off time in seconds (default: 0.9)')
+    led_group.add_argument('--led-repeat', type=int, default=1,
+                          help='LED repeat count (default: 1)')
+    
+    # Buzzer parameters
+    buzzer_group = parser.add_argument_group('buzzer parameters')
+    buzzer_group.add_argument('--buzzer-freq', type=int, default=1900,
+                             help='Buzzer frequency in Hz (default: 1900)')
+    buzzer_group.add_argument('--buzzer-on', type=float, default=0.3,
+                             help='Buzzer on time in seconds (default: 0.3)')
+    buzzer_group.add_argument('--buzzer-off', type=float, default=0.01,
+                             help='Buzzer off time in seconds (default: 0.01)')
+    buzzer_group.add_argument('--buzzer-repeat', type=int, default=1,
+                             help='Buzzer repeat count (default: 1)')
+    
+    # Motor parameters
+    motor_group = parser.add_argument_group('motor parameters')
+    motor_group.add_argument('--motor-speed', type=float, default=0.6,
+                            help='Motor speed (default: 0.6)')
+    motor_group.add_argument('--motor-duration', type=float, default=1.0,
+                            help='Motor test duration in seconds (default: 1.0)')
+    
+    # OLED parameters
+    oled_group = parser.add_argument_group('OLED parameters')
+    oled_group.add_argument('--oled-line', type=int, default=0,
+                           help='OLED line number (default: 0)')
+    oled_group.add_argument('--oled-text', type=str, default='Hello World',
+                           help='OLED text to display (default: "Hello World")')
+    
+    args = parser.parse_args()
+    
+    # Check if at least one test mode is specified
+    test_modes = [args.imu, args.button, args.battery, args.gamepad, args.sbus,
+                  args.led, args.buzzer, args.motor, args.bus_servo, args.pwm_servo, args.oled]
+    
+    if not any(test_modes):
+        parser.print_help()
+        print("\n❌ Error: Please specify at least one test mode (e.g., --imu, --battery, etc.)")
+        sys.exit(1)
+    
+    # Initialize board
+    print(f"Connecting to board on {args.port} at {args.baudrate} baud...")
+    try:
+        board = Board(args.port, baudrate=args.baudrate, timeout=args.timeout)
+        board.enable_reception()
+        time.sleep(0.1)
+        print("✓ Connected successfully!")
+        print()
+    except Exception as e:
+        print(f"❌ Failed to connect: {e}")
+        sys.exit(1)
+    
+    # Run selected tests
+    try:
+        if args.imu:
+            test_imu(board, args.interval)
+        
+        if args.button:
+            test_button(board, args.interval)
+        
+        if args.battery:
+            test_battery(board, args.interval)
+        
+        if args.gamepad:
+            test_gamepad(board, args.interval)
+        
+        if args.sbus:
+            test_sbus(board, args.interval)
+        
+        if args.led:
+            test_led(board, args.led_on, args.led_off, args.led_repeat, args.led_id)
+        
+        if args.buzzer:
+            test_buzzer(board, args.buzzer_freq, args.buzzer_on, 
+                       args.buzzer_off, args.buzzer_repeat)
+        
+        if args.motor:
+            test_motor(board, args.motor_duration, args.motor_speed)
+        
+        if args.bus_servo:
+            bus_servo_test(board)
+        
+        if args.pwm_servo:
+            pwm_servo_test(board)
+        
+        if args.oled:
+            test_oled(board, args.oled_line, args.oled_text)
+        
+    except KeyboardInterrupt:
+        print("\n\n✓ Test interrupted by user")
+    except Exception as e:
+        print(f"\n❌ Error during test: {e}")
+        raise
+    finally:
+        print("\nTest complete!")
+
+if __name__ == "__main__":
+    main()
