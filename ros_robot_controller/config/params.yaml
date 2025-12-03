@@ -1,0 +1,6 @@
+ros_robot_controller:
+  ros__parameters:
+    imu_frame: 'imu_link'
+    init_finish: false
+    auto_enable_steering_servo: true
+    steering_servo_id: 1

@@ -1,37 +1,21 @@
+import os
+from ament_index_python.packages import get_package_share_directory
 from launch_ros.actions import Node
-from launch_ros.parameter_descriptions import ParameterValue
 from launch import LaunchDescription, LaunchService
-from launch.actions import DeclareLaunchArgument
-from launch.substitutions import LaunchConfiguration
-from launch.substitutions import PythonExpression
 
 def generate_launch_description():
-    imu_frame_arg = DeclareLaunchArgument('imu_frame', default_value='imu_link')
-    auto_enable_steering_servo_arg = DeclareLaunchArgument('auto_enable_steering_servo', default_value='false')
-    steering_servo_id_arg = DeclareLaunchArgument('steering_servo_id', default_value='1')
-
-    imu_frame = LaunchConfiguration('imu_frame')
-    auto_enable_steering_servo = LaunchConfiguration('auto_enable_steering_servo')
-    steering_servo_id = LaunchConfiguration('steering_servo_id')
+    # Get package share directory
+    pkg_share = get_package_share_directory('ros_robot_controller')
+    params_file = os.path.join(pkg_share, 'config', 'params.yaml')
 
     ros_robot_controller_node = Node(
         package='ros_robot_controller',
         executable='ros_robot_controller',
         output='screen',
-        parameters=[{
-            'imu_frame': imu_frame,
-            'auto_enable_steering_servo': ParameterValue(
-                PythonExpression(["'", auto_enable_steering_servo, "' == 'true' or '", auto_enable_steering_servo, "' == 'True'"]),
-                value_type=bool
-            ),
-            'steering_servo_id': steering_servo_id
-        }]
+        parameters=[params_file]
     )
 
     return LaunchDescription([
-        imu_frame_arg,
-        auto_enable_steering_servo_arg,
-        steering_servo_id_arg,
         ros_robot_controller_node
     ])
 
