@@ -28,7 +28,11 @@ class RosRobotController(Node):
         # 声明参数
         self.declare_parameter('imu_frame', 'imu_link')
         self.declare_parameter('init_finish', False)
+        self.declare_parameter('auto_enable_steering_servo', False)
+        self.declare_parameter('steering_servo_id', 1)
         self.IMU_FRAME = self.get_parameter('imu_frame').value
+        self.auto_enable_steering = self.get_parameter('auto_enable_steering_servo').value
+        self.steering_servo_id = self.get_parameter('steering_servo_id').value
 
         self.imu_pub = self.create_publisher(Imu, '~/imu_raw', 1)
         self.joy_pub = self.create_publisher(Joy, '~/joy', 1)
@@ -48,6 +52,16 @@ class RosRobotController(Node):
 
         self.board.pwm_servo_set_offset(1, 0)
         self.board.set_motor_speed([[1, 0], [2, 0], [3, 0], [4, 0]])
+
+        # Auto-enable steering servo torque if requested
+        if self.auto_enable_steering:
+            self.get_logger().info(f'Auto-enabling steering servo torque (ID: {self.steering_servo_id})')
+            try:
+                self.board.bus_servo_enable_torque(self.steering_servo_id, 1)
+                self.get_logger().info('Steering servo torque enabled successfully')
+            except Exception as e:
+                self.get_logger().error(f'Failed to enable steering servo torque: {e}')
+
         self.clock = self.get_clock()
         threading.Thread(target=self.pub_callback, daemon=True).start()
         self.create_service(Trigger, '~/init_finish', self.get_node_state)
